@@ -20,6 +20,28 @@ from ldm.models.diffusion.dpm_solver import DPMSolverSampler
 
 torch.set_grad_enabled(False)
 
+category_to_style = {
+    'business': 'ultra modern style painting',
+    'history': 'ancient oil painting',
+    'communication': 'surrealist spray paint art',
+    'sports': 'motion blurred image',
+    'technology': 'modern techno style digital artwork',
+    'philosophy': 'expressionist artwork',
+    'music': 'expressionist oil painting',
+    'fanfiction': 'emotional watercolor painting',
+    'politics': 'realist color pencil drawing',
+    'religion': 'impressionist oil painting',
+}
+
+def fetch_leaf_txt_files(path: str) -> iter:
+    if os.path.isfile(path):
+        raise ValueError(f"Expected a directory, got a file: {path}")
+    elif os.path.isdir(path):
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                if file.endswith(".txt"):
+                    yield os.path.join(root, file)
+
 def chunk(it, size):
     it = iter(it)
     return iter(lambda: tuple(islice(it, size)), ())
@@ -97,19 +119,19 @@ def parse_args():
     parser.add_argument(
         "--n_iter",
         type=int,
-        default=3,
+        default=1,
         help="sample this often",
     )
     parser.add_argument(
         "--H",
         type=int,
-        default=512,
+        default=768,
         help="image height, in pixel space",
     )
     parser.add_argument(
         "--W",
         type=int,
-        default=512,
+        default=768,
         help="image width, in pixel space",
     )
     parser.add_argument(
@@ -127,7 +149,7 @@ def parse_args():
     parser.add_argument(
         "--n_samples",
         type=int,
-        default=3,
+        default=1,
         help="how many samples to produce for each given prompt. A.k.a batch size",
     )
     parser.add_argument(
@@ -143,14 +165,14 @@ def parse_args():
         help="unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty))",
     )
     parser.add_argument(
-        "--from-file",
+        "--textdir",
         type=str,
         help="if specified, load prompts from this file, separated by newlines",
     )
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/stable-diffusion/v2-inference.yaml",
+        default="configs/stable-diffusion/v2-inference-v.yaml",
         help="path to config which constructs model",
     )
     parser.add_argument(
@@ -182,7 +204,7 @@ def parse_args():
         type=str,
         help="Device on which Stable Diffusion will be run",
         choices=["cpu", "cuda"],
-        default="cpu"
+        default="cuda"
     )
     parser.add_argument(
         "--torchscript",
@@ -229,29 +251,31 @@ def main(opt):
     outpath = opt.outdir
 
     print("Creating invisible watermark encoder (see https://github.com/ShieldMnt/invisible-watermark)...")
-    wm = "SDV2"
+    wm = "SDV2_BOB_SAMIR"
     wm_encoder = WatermarkEncoder()
     wm_encoder.set_watermark('bytes', wm.encode('utf-8'))
 
     batch_size = opt.n_samples
-    n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
-    if not opt.from_file:
+    if not opt.textdir:
         prompt = opt.prompt
         assert prompt is not None
         data = [batch_size * [prompt]]
+        outpaths = [os.path.join(outpath, f"{prompt}.png")]
 
     else:
-        print(f"reading prompts from {opt.from_file}")
-        with open(opt.from_file, "r") as f:
-            data = f.read().splitlines()
-            data = [p for p in data for i in range(opt.repeat)]
-            data = list(chunk(data, batch_size))
-
-    sample_path = os.path.join(outpath, "samples")
-    os.makedirs(sample_path, exist_ok=True)
-    sample_count = 0
-    base_count = len(os.listdir(sample_path))
-    grid_count = len(os.listdir(outpath)) - 1
+        print(f"creating prompts from {opt.textdir}")
+        textfiles = list(fetch_leaf_txt_files(opt.textdir))
+        data = []
+        outpaths = []
+        for textfile in textfiles:
+            tokens = textfile.split("/")
+            for token in tokens:
+                if '---' in token:
+                    title = token.split('---')[0]
+                    category = token.split('---')[1].split('.')[0]
+                    prompt = f'a {category_to_style[category]} of {title.replace("_", " ")}'
+                    data.append(batch_size * [prompt])
+                    outpaths.append(os.path.join(outpath, "essays" if token.endswith('.txt') else "albums", title))
 
     start_code = None
     if opt.fixed_code:
@@ -328,15 +352,18 @@ def main(opt):
                                              x_T=start_code)
             print("Running a forward pass for decoder")
             for _ in range(3):
-                x_samples_ddim = model.decode_first_stage(samples_ddim)
+                _ = model.decode_first_stage(samples_ddim)
 
     precision_scope = autocast if opt.precision=="autocast" or opt.bf16 else nullcontext
     with torch.no_grad(), \
         precision_scope(opt.device), \
         model.ema_scope():
-            all_samples = list()
-            for n in trange(opt.n_iter, desc="Sampling"):
-                for prompts in tqdm(data, desc="data"):
+            for _ in trange(opt.n_iter, desc="Sampling"):
+                for prompts, outpath in tqdm(zip(data, outpaths), desc="data"):
+                    if os.path.exists(outpath):
+                        continue
+                    else:
+                        os.makedirs(outpath)
                     uc = None
                     if opt.scale != 1.0:
                         uc = model.get_learned_conditioning(batch_size * [""])
@@ -357,27 +384,11 @@ def main(opt):
                     x_samples = model.decode_first_stage(samples)
                     x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
 
-                    for x_sample in x_samples:
+                    for i, x_sample in enumerate(x_samples):
                         x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
                         img = Image.fromarray(x_sample.astype(np.uint8))
                         img = put_watermark(img, wm_encoder)
-                        img.save(os.path.join(sample_path, f"{base_count:05}.png"))
-                        base_count += 1
-                        sample_count += 1
-
-                    all_samples.append(x_samples)
-
-            # additionally, save as grid
-            grid = torch.stack(all_samples, 0)
-            grid = rearrange(grid, 'n b c h w -> (n b) c h w')
-            grid = make_grid(grid, nrow=n_rows)
-
-            # to image
-            grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-            grid = Image.fromarray(grid.astype(np.uint8))
-            grid = put_watermark(grid, wm_encoder)
-            grid.save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
-            grid_count += 1
+                        img.save(os.path.join(outpath, f"{i:05}.png"))
 
     print(f"Your samples are ready and waiting for you here: \n{outpath} \n"
           f" \nEnjoy.")
