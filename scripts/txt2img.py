@@ -265,17 +265,31 @@ def main(opt):
     else:
         print(f"creating prompts from {opt.textdir}")
         textfiles = list(fetch_leaf_txt_files(opt.textdir))
+        added_albums = set()
         data = []
         outpaths = []
         for textfile in textfiles:
+            if '---' not in textfile:
+                continue
             tokens = textfile.split("/")
-            for token in tokens:
-                if '---' in token:
-                    title = token.split('---')[0]
-                    category = token.split('---')[1].split('.')[0]
-                    prompt = f'a {category_to_style[category]} of {title.replace("_", " ")}'
-                    data.append(batch_size * [prompt])
-                    outpaths.append(os.path.join(outpath, "essays" if token.endswith('.txt') else "albums", title))
+            category_dir_idx = 0
+            while category_dir_idx < len(tokens):
+                if '---' in tokens[category_dir_idx]:
+                    break
+                category_dir_idx += 1
+            title = tokens[-1].split('.')[0].split('---')[0]
+            category = tokens[category_dir_idx].split('---')[1].split('.')[0]
+            author = tokens[category_dir_idx - 1]
+            prompt = f'a {category_to_style[category]} of {title.replace("_", " ").replace("-", " ")}'
+            album = 'NO_ALBUM'
+            if category_dir_idx + 1 < len(tokens):
+                album = tokens[category_dir_idx].split('---')[0]
+                if not album in added_albums:
+                    added_albums.add(album)
+                    data.append(batch_size * [f'a {category_to_style[category]} of {album.replace("_", " ").replace("-", " ")}'])
+                    outpaths.append(os.path.join(outpath, "albums", f"{author}---{album}.png"))
+            data.append(batch_size * [prompt])
+            outpaths.append(os.path.join(outpath, "essays", f"{author}---{album}---{title}.png"))
 
     start_code = None
     if opt.fixed_code:
