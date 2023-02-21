@@ -24,7 +24,7 @@ category_to_style = {
     'business': 'ultra modern style painting',
     'history': 'ancient oil painting',
     'communication': 'surrealist spray paint art',
-    'sports': 'motion blurred image',
+    'sports': 'hyper-realistic blurred image',
     'technology': 'modern techno style digital artwork',
     'philosophy': 'expressionist artwork',
     'music': 'expressionist oil painting',
@@ -76,11 +76,9 @@ def load_model_from_config(config, ckpt, device=torch.device("cuda"), verbose=Fa
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--prompt",
+        "--ckpt",
         type=str,
-        nargs="?",
-        default="a professional photograph of an astronaut riding a triceratops",
-        help="the prompt to render"
+        help="path to checkpoint of model",
     )
     parser.add_argument(
         "--outdir",
@@ -88,6 +86,18 @@ def parse_args():
         nargs="?",
         help="dir to write results to",
         default="outputs/txt2img-samples"
+    )
+    parser.add_argument(
+        "--textdir",
+        type=str,
+        help="if specified, load prompts from this file, separated by newlines",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        nargs="?",
+        default="a professional photograph of an astronaut riding a triceratops",
+        help="the prompt to render"
     )
     parser.add_argument(
         "--steps",
@@ -165,20 +175,10 @@ def parse_args():
         help="unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty))",
     )
     parser.add_argument(
-        "--textdir",
-        type=str,
-        help="if specified, load prompts from this file, separated by newlines",
-    )
-    parser.add_argument(
         "--config",
         type=str,
         default="configs/stable-diffusion/v2-inference-v.yaml",
         help="path to config which constructs model",
-    )
-    parser.add_argument(
-        "--ckpt",
-        type=str,
-        help="path to checkpoint of model",
     )
     parser.add_argument(
         "--seed",
@@ -287,9 +287,9 @@ def main(opt):
                 if not album in added_albums:
                     added_albums.add(album)
                     data.append(batch_size * [f'a {category_to_style[category]} of {album.replace("_", " ").replace("-", " ")}'])
-                    outpaths.append(os.path.join(outpath, "albums", f"{author}---{album}.png"))
+                    outpaths.append(os.path.join(outpath, "albums", f"{author}---{album}"))
             data.append(batch_size * [prompt])
-            outpaths.append(os.path.join(outpath, "essays", f"{author}---{album}---{title}.png"))
+            outpaths.append(os.path.join(outpath, "essays", f"{author}---{album}---{title}"))
 
     start_code = None
     if opt.fixed_code:
@@ -374,7 +374,8 @@ def main(opt):
         model.ema_scope():
             for _ in trange(opt.n_iter, desc="Sampling"):
                 for prompts, outpath in tqdm(zip(data, outpaths), desc="data"):
-                    if os.path.exists(outpath):
+                    if os.path.exists(os.path.join(outpath, "00000.png")):
+                        print(f"Skipping {outpath}")
                         continue
                     else:
                         os.makedirs(outpath)
